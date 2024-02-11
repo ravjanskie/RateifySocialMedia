@@ -1,0 +1,698 @@
+<template>
+  <nav
+    class="w-screen sticky top-0 z-10 bg-gray-900 dark:bg-gray-900 py-5 mx-auto flex justify-center items-center text-center"
+  >
+    <h1
+      class="text-xl md:text-2xl lg:text-3xl text-center font-semibold text-zinc-900 hover:text-indigo-400 logoname"
+    >
+      Main Feed
+    </h1>
+  </nav>
+  <div class="">
+    <div
+      class="w-screen overflow-y-auto overflow-x-hidden feed-wrapper flex flex-col justify-center items-center my-4"
+    >
+      <div class="m-3 flex justify-between rounded">
+        
+        <input
+          v-model="searchQuery"
+          placeholder="Search post title..."
+          class="search-input flex-grow pl-3"
+        />
+        <button
+          @click="resetAndSearch"
+          class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+        >
+          Search
+        </button>
+      </div>
+
+      <div
+        v-for="(post, index) in data"
+        :key="index"
+        class="my-2 rounded w-3/4 md:w-2/3 lg:w-1/2"
+      >
+        <el-card class="feed">
+          <template #header>
+            <router-link
+              :to="{
+                name: 'viewPost',
+                params: { postID: post.post_id },
+              }"
+            >
+              <div class="flex flex-col-reverse md:flex-row justify-between">
+                <div class="user-profile flex align-middle">
+                  <div class="user-avatar flex items-center">
+                    <el-avatar
+                      v-if="post.user.avatar_blob_url"
+                      :src="post.user.avatar_blob_url"
+                      size="32"
+                    />
+
+                  </div>
+                  <div class="ml-3 user-info w-fit">
+                    <span class="text-bold text-base">
+                      {{ post.user.username }}</span
+                    >
+                    <h6 class="text-xs text-end">
+                      Created {{ formatTimestamp(post.created_at) }}
+                    </h6>
+                  </div>
+                </div>
+                <div class="rate-container max-w-full">
+                  <el-tag
+                    type="primary"
+                    class="mr-2 my-2 flex items-center justify-center bg-sky-600 w-full"
+                    effect="dark"
+                    round
+                  >
+                    <span class="pr-score text-white">
+                      Post Rating {{ calculateAverageRating(post) }}
+                    </span>
+                    <el-icon><StarFilled /></el-icon>
+                  </el-tag>
+                </div>
+              </div>
+            </router-link>
+          </template>
+          <router-link
+            :to="{
+              name: 'viewPost',
+              params: { postID: post.post_id },
+            }"
+          >
+            <div class="feed-card-body">
+              <div
+                class="details font-semibold text-xl mb-3 px-2 md:text-2xl lg:text-3xl"
+              >
+                {{ post.post_title }}
+              </div>
+
+              <div
+                v-if="downloading"
+                class="flex justify-center items-center text-center"
+              >
+                <l-grid
+                  v-if="!post.image_url"
+                  size="70"
+                  speed="1.5"
+                  color="black"
+                  class="my-4"
+                ></l-grid>
+              </div>
+
+              <div
+                v-if="post.image_url"
+                class="flex justify-center items-center text-center"
+              >
+                <img
+                  :src="post.image_url"
+                  alt="Post Image"
+                  class="post-image z-10 mb-3 w-auto h-auto md:h-80"
+                />
+              </div>
+
+              <div
+                v-if="
+                  post.post_description && post.post_description.length > 500
+                "
+              >
+                <div
+                  class="details text-sm mx-3 px-2 md:text-base lg:text-2xl truncated-text"
+                >
+                  {{ post.post_description }}
+                </div>
+                <div
+                  class="text-sm md:text-base lg:text-xl text-center see-more"
+                >
+                  <span class="gradient-text-background3"
+                    >Click Post to see more...
+                  </span>
+                </div>
+              </div>
+
+              <div v-else>
+                <div class="details text-sm mx-3 px-2 md:text-base lg:text-2xl">
+                  {{ post.post_description }}
+                </div>
+              </div>
+            </div>
+          </router-link>
+
+          <template #footer>
+            <p
+              v-if="post.userHasRated"
+              class="text-xs md:text-sm lg:text-base my-1"
+            ></p>
+            <p v-else class="text-xs md:text-sm lg:text-base my-1">
+              Rate this post from 1 to 5
+            </p>
+            <el-rate
+              v-model="post.ratevalue"
+              :colors="colors"
+              class="flex align-middle"
+              text-color="#ff9900"
+              allow-half
+              clearable
+              show-score
+              @change="onRatingChange(post.ratevalue, post.post_id)"
+            />
+            <div class="ml-3 mt-3 user-info">
+              <span class="text-bold"></span>
+              <h6 class="text-xs text-end">
+                Created {{ formatTimestamp(post.created_at) }}
+              </h6>
+            </div>
+          </template>
+        </el-card>
+      </div>
+    </div>
+
+    <div class="w-screen flex justify-center items-center">
+      <l-spiral
+        v-if="loading"
+        size="40"
+        speed="0.9"
+        color="black"
+        class="text-center my-4"
+      >
+      </l-spiral>
+      <p
+        v-if="noMore"
+        class="text-center my-3 text-sm md:text-base lg:text-2xl"
+      >
+        No more posts
+      </p>
+    </div>
+  </div>
+
+  <el-backtop visibility-height :right="40" :bottom="40" />
+</template>
+
+<script setup>
+import "../../assets/main.css";
+import { supabase } from "../../connections/supabase";
+import { ref, onMounted, onUnmounted, watch } from "vue";
+import Swal from "sweetalert2";
+import { debounce } from "lodash";
+
+let loading = ref(false);
+const downloading = ref(false);
+const colors = ref(["#99A9BF", "#F7BA2A", "#FF9900"]);
+const data = ref([]);
+const noMore = ref();
+const searchQuery = ref("");
+const currentPage = ref(1);
+const postsPerPage = ref(5);
+
+function resetAndSearch() {
+  currentPage.value = 1;
+  data.value = []; // Clear existing posts
+  noMore.value = false; // Reset the "no more data" state
+
+  if (searchQuery.value.trim()) {
+    // If there is a search query, fetch posts based on the search query
+    getPostsAndRatings(currentPage.value, searchQuery.value.trim());
+  } else {
+    // If the search query is cleared, fetch all posts without applying the search filter
+    getPostsAndRatings(currentPage.value);
+  }
+}
+
+function isScrollAtBottom() {
+  const scrollable = document.documentElement;
+  return window.innerHeight + window.scrollY >= scrollable.scrollHeight - 1500; 
+}
+
+const debouncedOnScroll = debounce(() => {
+  if (isScrollAtBottom() && !loading.value && !noMore.value) {
+    currentPage.value += 1;
+    getPostsAndRatings(currentPage.value, searchQuery.value.trim()); 
+  }
+}, 300);
+
+onMounted(() => {
+  window.addEventListener("scroll", debouncedOnScroll);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("scroll", debouncedOnScroll);
+});
+
+const ratingChannel = supabase
+  .channel("fetch_ratings_channel")
+  .on(
+    "postgres_changes",
+    { event: "*", schema: "public", table: "ratings" },
+    async (payload) => {
+      console.log("Rating Change received!", payload);
+
+      try {
+        if (payload && payload.new && payload.new.post_id) {
+          const postID = payload.new.post_id;
+
+          await getRatedPosts(postID);
+          await getPostRatingVal(postID);
+        } else {
+          console.warn("Missing or invalid payload structure:", payload);
+        }
+      } catch (error) {
+        console.error("Error handling payload:", error);
+      }
+    }
+  )
+  .subscribe();
+
+  const postChannel = supabase
+  .channel("fetch_posts_channel")
+  .on(
+    "postgres_changes",
+    { event: "*", schema: "public", table: "posts" },
+    (payload) => {
+
+      console.log("Change received!", payload);
+      data.value = data.value.filter(post => post.post_id !== payload.old.post_id); // Fetch updated posts and ratings
+    }
+  )
+  .subscribe();
+
+
+
+const profilesChannel = supabase
+  .channel("fetch_profiles_channel")
+  .on(
+    "postgres_changes",
+    { event: "*", schema: "public", table: "profiles" },
+    (payload) => {
+
+      console.log("Change received!", payload);
+    }
+  )
+  .subscribe();
+
+
+async function downloadAvatarImage(user) {
+  if (!user.avatar_url) return; // Skip if no avatar URL is provided
+
+  try {
+    const { data, error } = await supabase.storage
+      .from("avatars")
+      .download(user.avatar_url, {
+        transform: {
+          quality: 20,
+        },
+      });
+
+    if (error) {
+      console.error("Error downloading avatar:", error.message);
+      return;
+    }
+
+    // Create a blob URL for the avatar data
+    const avatarUrl = URL.createObjectURL(data);
+
+    // Update the user object with the blob URL
+    user.avatar_blob_url = avatarUrl;
+  } catch (error) {
+    console.error("Error downloading avatar image:", error.message);
+  }
+}
+
+async function getPostsAndRatings(page = 1, query = "") {
+  if (loading.value) return;
+
+  loading.value = true;
+  downloading.value = true;
+
+  try {
+    const start = (page - 1) * postsPerPage.value;
+    const end = start + postsPerPage.value - 1;
+
+    let queryBuilder = supabase
+      .from("posts")
+      .select(
+        `
+        *,
+        user:profiles (id, username, email, avatar_url)
+      `
+      )
+      .order("created_at", { ascending: false })
+      .range(start, end);
+
+    if (query.trim()) {
+      queryBuilder = queryBuilder.textSearch(
+        "title_description_concat",
+        `'${query}'`,
+        { type: "plain" }
+      );
+    }
+
+    let { data: newPosts, error } = await queryBuilder;
+
+    if (error) throw new Error("Error fetching posts: " + error.message);
+
+    // Download avatars for each user
+    await Promise.all(
+      newPosts.map(async (post) => {
+        if (post.user && post.user.avatar_url) {
+          await downloadAvatarImage(post.user);
+        }
+      })
+    );
+
+    // Continue with existing logic...
+    data.value = [
+      ...data.value,
+      ...newPosts.map((post) => ({
+        ...post,
+        user: post.user,
+        ratevalue: post.ratevalue || 0,
+        ratings: [],
+        userHasRated: false,
+        isLoadingImage: !!post.post_image_url,
+      })),
+    ];
+
+    await Promise.all(
+      data.value.map(async (post) => {
+        await getRatedPosts(post.post_id);
+        await getPostRatingVal(post.post_id);
+        if (post.post_image_url) {
+          await downloadImage(post.post_image_url, post);
+        }
+      })
+    );
+
+    noMore.value = newPosts.length < postsPerPage.value;
+  } catch (error) {
+    console.error("Error in getPostsAndRatings:", error.message);
+    Swal.fire({
+      icon: "error",
+      title: "Unexpected Error",
+      text: error.message,
+    });
+  } finally {
+    loading.value = false;
+    downloading.value = false;
+  }
+}
+
+async function downloadImage(postImageUrl, post) {
+  try {
+    const { data, error } = await supabase.storage
+      .from("post_images")
+      .download(postImageUrl, {
+        transform: {
+          resize: "fill",
+          quality: 20,
+        },
+      });
+
+    if (error) {
+      console.error("Error downloading image:", error.message);
+      return;
+    }
+
+    // Create a blob URL for the image data
+    const imageUrl = URL.createObjectURL(data);
+
+    // Update the post object with the image URL
+    post.image_url = imageUrl;
+  } catch (error) {
+    console.error("Error:", error.message);
+  }
+}
+
+async function getRatedPosts(postID) {
+  try {
+    const {
+      data: {
+        user: { id },
+      },
+    } = await supabase.auth.getUser();
+
+    const { data: ratings, error } = await supabase
+      .from("ratings")
+      .select("rating_score")
+      .eq("post_id", postID)
+      .eq("user_id", id);
+
+    if (error) {
+      console.error("Error fetching ratings:", error.message);
+      return;
+    }
+
+    const postIndex = data.value.findIndex((p) => p.post_id === postID);
+    if (postIndex !== -1) {
+      const post = data.value[postIndex];
+      post.ratings = ratings || [];
+      post.ratevalue = ratings.length > 0 ? ratings[0].rating_score : 0;
+      post.userHasRated = ratings.length > 0;
+      data.value.splice(postIndex, 1, post);
+    }
+  } catch (error) {
+    console.error("Error in getRatedPosts:", error.message);
+  }
+}
+
+async function getPostRatingVal(postID) {
+  try {
+    const { data: ratings, error } = await supabase
+      .from("ratings")
+      .select("rating_score")
+      .eq("post_id", postID);
+
+    if (error) {
+      console.error("Error fetching ratings:", error.message);
+    } else {
+      const postIndex = data.value.findIndex((p) => p.post_id === postID);
+      if (postIndex !== -1) {
+        const post = data.value[postIndex];
+        post.ratings = ratings;
+      }
+    }
+  } catch (error) {
+    console.error("Error:", error.message);
+  }
+}
+
+function calculateAverageRating(post) {
+  // If there are no ratings, return a default value
+  if (!Array.isArray(post.ratings) || post.ratings.length === 0) {
+    return "0.0";
+  }
+
+  // Calculate the total sum of ratings
+  const totalRatings = post.ratings.reduce(
+    (sum, rating) => sum + rating.rating_score,
+    0
+  );
+
+  // Calculate the average rating
+  const averageRating = totalRatings / post.ratings.length;
+
+  console.log("calculateAverageRating", averageRating);
+
+  // Return the calculated average rating with two decimal places
+  return averageRating.toFixed(1);
+}
+
+async function submitRating(rating, postID) {
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    const { id } = user;
+    const post_ID = postID;
+
+    const { data: ratingData, error } = await supabase.from("ratings").upsert(
+      [
+        {
+          rating_score: rating,
+          post_id: post_ID,
+          user_id: id,
+        },
+      ],
+      { onConflict: ["post_id", "user_id"] }
+    );
+
+    if (error) {
+      console.error(
+        "Error submitting rating:",
+        error.message,
+        rating,
+        post_ID,
+        id
+      );
+      return; // Return early to avoid executing the rest of the code
+    }
+
+    console.log("Rating submitted successfully:", ratingData);
+
+    // Ensure data and data.value are defined
+    if (data && data.value) {
+      const postIndex = data.value.findIndex((p) => p.post_id === postID);
+      if (postIndex !== -1) {
+        data.value[postIndex].userRating = rating;
+        data.value[postIndex].userHasRated = true;
+      }
+    } else {
+      console.error("data or data.value is null or undefined");
+    }
+  } catch (error) {
+    console.error("Error:", error.message);
+  }
+}
+
+function onRatingChange(rating, postID) {
+  console.log("Rating changed:", rating, postID);
+
+  if (rating === 0) {
+    // If the user unrates a post, remove the rating from the ratings array
+    const postIndex = data.value.findIndex((p) => p.post_id === postID);
+    if (postIndex !== -1) {
+      const post = data.value[postIndex];
+      post.ratings = [];
+      post.ratevalue = null;
+      data.value.splice(postIndex, 1, post);
+    }
+
+    deleteRating(postID);
+  } else {
+    submitRating(rating, postID);
+  }
+
+  // Calculate the average rating even if the user unrates a post
+  calculateAverageRating(postID);
+}
+
+async function deleteRating(postID) {
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    const { id } = user;
+
+    const { data, error } = await supabase
+      .from("ratings")
+      .delete()
+      .eq("post_id", postID)
+      .eq("user_id", id);
+
+    if (error) {
+      console.error("Error deleting rating:", error.message);
+    } else {
+      console.log("Rating deleted successfully:", data);
+    }
+
+    if (!error) {
+      const postIndex = data.value.findIndex((p) => p.post_id === postID);
+      if (postIndex !== -1) {
+        data.value[postIndex].userRating = 0;
+        data.value[postIndex].userHasRated = false;
+      }
+    }
+  } catch (error) {
+    console.error("Error:", error.message);
+  }
+}
+
+function formatTimestamp(timestamp) {
+  const now = new Date();
+  const postTime = new Date(timestamp);
+  const timeDifference = now - postTime;
+
+  // Calculate minutes, hours, and days
+  const minutes = Math.floor(timeDifference / (1000 * 60));
+  const hours = Math.floor(timeDifference / (1000 * 60 * 60));
+  const days = Math.floor(timeDifference / (1000 * 60 * 60 * 24));
+
+  // Format based on time difference
+  if (minutes < 60) {
+    return `${minutes} ${minutes === 1 ? "minute" : "minutes"} ago`;
+  } else if (hours < 24) {
+    return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  } else if (days < 7) {
+    return `${days} ${days === 1 ? "day" : "days"} ago`;
+  } else {
+    // If more than a week, show the date
+    const options = { year: "numeric", month: "long", day: "numeric" };
+    return postTime.toLocaleDateString(undefined, options);
+  }
+}
+
+// Initialization
+getPostsAndRatings(currentPage.value);
+</script>
+
+<style lang="scss">
+.gradient-text-background3 {
+  background: linear-gradient(-45deg, #7f00ff, #ee7752, #e73c7e, #0000ff);
+
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-size: 500% auto;
+  animation: textShine 5s ease-in-out infinite alternate;
+}
+
+@keyframes textShine {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 100% 50%;
+  }
+}
+.truncated-text {
+  position: relative;
+  display: -webkit-box;
+  -webkit-line-clamp: 10;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 15em;
+
+  &::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 8rem;
+    background: linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0),
+      rgba(255, 255, 255, 1)
+    );
+  }
+}
+
+.see-more {
+  color: blue;
+  cursor: pointer;
+  margin-top: 5px;
+}
+
+.logoname,
+.hamburgerColor {
+  color: #5fbdff !important;
+}
+
+@media (max-width: 468px) {
+  .feed-container {
+    .el-card {
+      .el-card__header {
+        padding: 10px;
+        & > div {
+          flex-direction: column-reverse;
+          gap: 10px;
+        }
+
+        .rate-container {
+          text-align: right;
+        }
+      }
+    }
+  }
+}
+</style>
